@@ -98,6 +98,38 @@ describe('statement at-rules', () => {
   });
 });
 
+describe('keyframes', () => {
+  // Stops are animation positions, not component surface. The single-stop form
+  // was filtered by prelude; a stop list was not, so `0%, 100%` reached the
+  // persisted manifest as two selectors.
+  it.each([
+    ['a comma-separated percentage list', '@keyframes pulse { 0%, 100% { opacity: var(--opacity); } }'],
+    ['a mixed from/to list', '@keyframes pulse { from, to { opacity: var(--opacity); } }'],
+    ['a single stop', '@keyframes pulse { 50% { opacity: var(--opacity); } }'],
+    ['a vendor-prefixed block', '@-webkit-keyframes pulse { 0%, 100% { opacity: var(--opacity); } }'],
+    ['several stops', '@keyframes pulse { from { opacity: 0; } 50%, 75% { opacity: 0.5; } to { opacity: 1; } }'],
+  ])('emits no selector for %s', (_label, css) => {
+    expect(manifestFor(css).selectors).toEqual([]);
+  });
+
+  it('keeps scanning rules that follow a keyframes block', () => {
+    const css = `
+      @keyframes pulse { 0%, 100% { opacity: var(--opacity); } }
+      .btn { color: var(--accent); }
+    `;
+    const manifest = manifestFor(css, '<button class="btn"></button>');
+
+    expect(manifest.selectors).toEqual(['.btn']);
+    expect(groupTokens(css, 'buttons', '<button class="btn"></button>')).toEqual(['--accent']);
+  });
+
+  it('does not attribute stop declarations to an enclosing rule', () => {
+    const css = '.card { background: var(--surface); @keyframes pulse { 0%, 100% { color: var(--fg); } } }';
+
+    expect(groupTokens(css, 'cards', '<div class="card"></div>')).toEqual(['--surface']);
+  });
+});
+
 describe('lexical edge cases', () => {
   it('ignores braces inside string values', () => {
     const css = `

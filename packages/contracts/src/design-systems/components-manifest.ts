@@ -289,8 +289,13 @@ type ScanCursor = {
  */
 function scanCssRules(css: string): ScannedCssRule[] {
   const rules: ScannedCssRule[] = [];
-  scanCssStatements(css, 0, [], rules);
+  scanCssStatements(css, 0, [], rules, true);
   return rules;
+}
+
+/** `@keyframes`, including the vendor-prefixed spellings. */
+function isKeyframesPrelude(prelude: string): boolean {
+  return /^@(?:-[a-z]+-)?keyframes\b/i.test(prelude);
 }
 
 /**
@@ -304,6 +309,7 @@ function scanCssStatements(
   start: number,
   ancestors: string[],
   rules: ScannedCssRule[],
+  emitRules: boolean,
 ): ScanCursor {
   let declarations = '';
   let buffer = '';
@@ -364,16 +370,24 @@ function scanCssStatements(
       buffer = '';
       if (prelude.startsWith('@')) {
         // Conditional groups (`@media`, `@supports`, `@container`, block-form
-        // `@layer`) do not change the selector their contents apply to; other
-        // block at-rules (`@keyframes`, `@font-face`) carry no selector either.
-        const block = scanCssStatements(css, index + 1, ancestors, rules);
+        // `@layer`) do not change the selector their contents apply to, so they
+        // stay transparent. A `@keyframes` block is different: its children are
+        // animation positions, not component surface, so the block is scanned
+        // for balance but contributes no rules.
+        const block = scanCssStatements(
+          css,
+          index + 1,
+          ancestors,
+          rules,
+          emitRules && !isKeyframesPrelude(prelude),
+        );
         declarations += block.declarations;
         index = block.index;
         continue;
       }
       const selectors = resolveNestedSelectors(prelude, ancestors);
-      const block = scanCssStatements(css, index + 1, selectors, rules);
-      rules.push({ prelude, selectors, declarations: block.declarations });
+      const block = scanCssStatements(css, index + 1, selectors, rules, emitRules);
+      if (emitRules) rules.push({ prelude, selectors, declarations: block.declarations });
       index = block.index;
       continue;
     }
@@ -446,12 +460,19 @@ function resolveNestedSelectors(prelude: string, ancestors: string[]): string[] 
 }
 
 /**
- * `:root` blocks declare tokens rather than component surface, and keyframe
- * stops are positions rather than selectors. Both are matched on the prelude as
- * written so the rule is judged the way its author wrote it.
+ * `:root` blocks declare tokens rather than component surface, and a keyframe
+ * stop list is a set of animation positions rather than selectors. `@keyframes`
+ * blocks already contribute no rules; this also covers a stop list reaching the
+ * consumers by any other route. Both are matched on the prelude as written so
+ * the rule is judged the way its author wrote it.
  */
 function isTokenOrKeyframeRule(prelude: string): boolean {
-  return prelude.includes(':root') || /^(?:from|to|\d+(?:\.\d+)?%)$/i.test(prelude);
+  return prelude.includes(':root') || isKeyframeStopList(prelude);
+}
+
+function isKeyframeStopList(prelude: string): boolean {
+  const stops = prelude.split(',').map((stop) => stop.trim()).filter((stop) => stop.length > 0);
+  return stops.length > 0 && stops.every((stop) => /^(?:from|to|\d+(?:\.\d+)?%)$/i.test(stop));
 }
 
 function extractCssSelectors(css: string): string[] {
