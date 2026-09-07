@@ -72,12 +72,39 @@ type ComponentGroupDefinition = {
 };
 
 /**
- * Match a whole class-name segment. Substring matching pulled unrelated classes
- * into groups — `platform` into form fields, `icon-octagon` into buttons — so a
- * word only counts when it is a segment of its own, optionally pluralized.
+ * English plural of a matcher word: sibilants take `-es` (`status` ->
+ * `statuses`), a consonant before `y` takes `-ies`, everything else `-s`.
+ */
+function pluralOf(word: string): string {
+  if (/(?:s|x|z|ch|sh)$/i.test(word)) return `${word}es`;
+  if (/[^aeiou]y$/i.test(word)) return `${word.slice(0, -1)}ies`;
+  return `${word}s`;
+}
+
+/**
+ * Match a whole class-name segment, singular or plural. Substring matching
+ * pulled unrelated classes into groups — `platform` into form fields,
+ * `icon-octagon` into buttons — while segment matching keeps the families each
+ * group owns: `status`, `statuses-list`, `icon-status` and `statusBadge` all
+ * reach the badges group, because callers also test the kebab-cased spelling
+ * (see `classNameVariants`).
  */
 function classSegment(word: string): RegExp {
-  return new RegExp(`(?:^|[-_])${word}s?(?:$|[-_])`, 'i');
+  const forms = [pluralOf(word), word];
+  return new RegExp(`(?:^|[-_])(?:${forms.join('|')})(?:$|[-_])`, 'i');
+}
+
+/**
+ * A class name as written plus its kebab-cased spelling, so one segment matcher
+ * covers `icon-status`, `icon_status` and `iconStatus` without every matcher
+ * having to describe a case boundary. `HTMLButton` splits on the acronym edge
+ * as well, giving `HTML-Button`.
+ */
+function classNameVariants(className: string): string[] {
+  const kebab = className
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2');
+  return kebab === className ? [className] : [className, kebab];
 }
 
 const COMPONENT_GROUPS: ComponentGroupDefinition[] = [
@@ -236,7 +263,9 @@ function buildGroupManifest(
     definition.selectorMatchers.some((matcher) => matcher.test(selector)),
   );
   const classes = inventory.classes.filter((className) =>
-    definition.classMatchers.some((matcher) => matcher.test(className)),
+    classNameVariants(className).some((variant) =>
+      definition.classMatchers.some((matcher) => matcher.test(variant)),
+    ),
   );
   const elements = inventory.elements.filter((element) =>
     definition.elementMatchers.some((matcher) => matcher.test(element)),
@@ -337,6 +366,8 @@ function scanCssStatements(
     const char = css.charAt(index);
 
     if (char === '/' && css[index + 1] === '*') {
+      // CSS ends an unterminated comment at EOF, so an unclosed `/*` legitimately
+      // comments out the remainder rather than being recovered from.
       const close = css.indexOf('*/', index + 2);
       index = close === -1 ? css.length : close + 2;
       continue;
@@ -457,12 +488,18 @@ function readCssString(css: string, start: number): number {
   return css.length;
 }
 
-/** Index just past the balanced `)` of the group starting at `start`. */
+/**
+ * Index just past the balanced `)` of the group starting at `start`. An
+ * unescaped, unquoted block brace ends the group instead: braces do not appear
+ * inside a function in well-formed CSS, so meeting one means the `(` was never
+ * closed, and stopping keeps the rest of the stylesheet readable rather than
+ * consuming it as part of the function.
+ */
 function readCssParens(css: string, start: number): number {
   let depth = 0;
   let index = start;
   while (index < css.length) {
-    const char = css[index];
+    const char = css.charAt(index);
     if (char === '\\') {
       index = skipCssEscape(css, index);
       continue;
@@ -471,6 +508,7 @@ function readCssParens(css: string, start: number): number {
       index = readCssString(css, index);
       continue;
     }
+    if (char === '{' || char === '}') return index;
     if (char === '(') depth += 1;
     if (char === ')') {
       depth -= 1;

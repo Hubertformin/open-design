@@ -209,7 +209,40 @@ describe('malformed input', () => {
   });
 });
 
+describe('unterminated functions', () => {
+  it('bounds an unterminated url() at the block brace', () => {
+    const css = '.btn { background: url(unclosed; }\n.card { background: var(--surface); }';
+
+    expect(manifestFor(css).selectors).toEqual(['.btn', '.card']);
+  });
+
+  it('bounds an unterminated selector function so later rules survive', () => {
+    const css = '.btn:is(.a { color: var(--accent); }\n.card { background: var(--surface); }';
+
+    expect(manifestFor(css).selectors.some((selector) => selector.includes('.card'))).toBe(true);
+  });
+
+  it('keeps a balanced nested function intact', () => {
+    const css = '.btn { width: calc(var(--space-4) * (1 + 2)); }\n.card { background: var(--surface); }';
+    const bodyHtml = '<button class="btn"></button><div class="card"></div>';
+
+    expect(manifestFor(css, bodyHtml).selectors).toEqual(['.btn', '.card']);
+    expect(groupTokens(css, 'buttons', bodyHtml)).toEqual(['--space-4']);
+  });
+
+  it('comments out the remainder of an unterminated comment, as CSS does', () => {
+    const css = '.btn { color: var(--accent); }\n/* .card { background: var(--surface); }';
+
+    expect(manifestFor(css).selectors).toEqual(['.btn']);
+  });
+});
+
 describe('class matchers', () => {
+  function classesFor(bodyHtml: string, groupId: string): string[] {
+    const manifest = manifestFor('.x { color: var(--fg); }', bodyHtml);
+    return manifest.groups.find((group) => group.id === groupId)?.classes ?? [];
+  }
+
   it('matches whole class-name segments rather than substrings', () => {
     const bodyHtml = `
       <div class="platform"></div>
@@ -217,10 +250,36 @@ describe('class matchers', () => {
       <div class="form-field"></div>
       <div class="cta-primary"></div>
     `;
-    const manifest = manifestFor('.form-field { color: var(--fg); }', bodyHtml);
-    const classesFor = (id: string) => manifest.groups.find((group) => group.id === id)?.classes ?? [];
 
-    expect(classesFor('inputs')).toEqual(['form-field']);
-    expect(classesFor('buttons')).toEqual(['cta-primary']);
+    expect(classesFor(bodyHtml, 'inputs')).toEqual(['form-field']);
+    expect(classesFor(bodyHtml, 'buttons')).toEqual(['cta-primary']);
+  });
+
+  // Segment matching must not cost the families a group already owned. `status`
+  // pluralizes to `statuses`, not `statuss`, and class names are written in
+  // kebab, snake and camel case.
+  it.each([
+    ['singular', 'status'],
+    ['irregular plural', 'statuses-list'],
+    ['kebab case', 'icon-status'],
+    ['snake case', 'icon_status'],
+    ['camel case', 'statusBadge'],
+    ['camel case with a leading word', 'iconStatus'],
+    ['acronym boundary', 'HTMLStatus'],
+  ])('claims a %s status class for the badges group', (_label, className) => {
+    expect(classesFor(`<span class="${className}"></span>`, 'badges')).toEqual([className]);
+  });
+
+  it.each([
+    ['platform', 'inputs'],
+    ['transformation', 'inputs'],
+    ['icon-octagon', 'buttons'],
+    ['statusbar', 'badges'],
+  ])('keeps %s out of the %s group', (className, groupId) => {
+    expect(classesFor(`<div class="${className}"></div>`, groupId)).toEqual([]);
+  });
+
+  it('still claims a regular plural', () => {
+    expect(classesFor('<div class="buttons"></div>', 'buttons')).toEqual(['buttons']);
   });
 });
