@@ -151,6 +151,17 @@ describe('lexical edge cases', () => {
     expect(groupTokens(css, 'cards', '<div class="card"></div>')).toEqual(['--surface']);
   });
 
+  it.each([
+    ['LF', '\\\n'],
+    ['CRLF', '\\\r\n'],
+  ])('reads an escaped %s inside a string as a line continuation', (_label, continuation) => {
+    // The escape consumes the whole newline, CRLF included, so the string is
+    // not cut in half by the LF half of the pair.
+    const css = `.btn::before { content: "a${continuation}b"; color: var(--accent); }\n.card { background: var(--surface); }`;
+
+    expect(manifestFor(css).selectors).toEqual(['.btn::before', '.card']);
+  });
+
   it('treats an ampersand inside quoted selector text as a value', () => {
     const css = '.card { &[data-state="&"] { background: var(--surface); } }';
 
@@ -182,10 +193,17 @@ describe('malformed input', () => {
     expect(groupTokens(css, 'buttons', bodyHtml)).toEqual(['--accent']);
   });
 
-  it('does not let an unterminated string swallow the rest of the stylesheet', () => {
-    // CSS ends a string at an unescaped newline, so the damage is bounded to
-    // the declaration that opened the quote.
-    const css = '.btn::before { content: "unterminated; }\n.card { background: var(--surface); }';
+  // CSS ends a string at an unescaped newline, so the damage is bounded to the
+  // declaration that opened the quote. Preprocessing folds CR, CRLF and form
+  // feed into newlines, so a stylesheet saved with CR line endings has to
+  // recover the same way an LF one does.
+  it.each([
+    ['LF', '\n'],
+    ['CR', '\r'],
+    ['CRLF', '\r\n'],
+    ['form feed', '\f'],
+  ])('bounds an unterminated string at a %s newline', (_label, newline) => {
+    const css = `.btn::before { content: "unterminated; }${newline}.card { background: var(--surface); }`;
 
     expect(manifestFor(css).selectors.some((selector) => selector.includes('.card'))).toBe(true);
   });

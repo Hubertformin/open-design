@@ -343,8 +343,9 @@ function scanCssStatements(
     }
 
     if (char === '\\') {
-      buffer += css.slice(index, index + 2);
-      index += 2;
+      const next = skipCssEscape(css, index);
+      buffer += css.slice(index, next);
+      index = next;
       continue;
     }
 
@@ -422,7 +423,21 @@ function scanCssStatements(
 }
 
 /**
- * Index just past the closing quote of the string starting at `start`. An
+ * Index just past the escape sequence starting at `start`. CSS preprocessing
+ * folds CRLF into one newline, so an escaped CRLF is a single line continuation
+ * rather than an escaped CR followed by a stray LF.
+ */
+function skipCssEscape(css: string, start: number): number {
+  return css.startsWith('\r\n', start + 1) ? start + 3 : start + 2;
+}
+
+/** CR, LF and form feed all end a line once CSS preprocessing is applied. */
+function isCssNewline(char: string): boolean {
+  return char === '\n' || char === '\r' || char === '\f';
+}
+
+/**
+ * Index just past the closing quote of the string starting at `start`. Any
  * unescaped newline ends it, matching how CSS treats an unterminated string, so
  * a stray quote does not swallow the rest of the stylesheet.
  */
@@ -430,12 +445,12 @@ function readCssString(css: string, start: number): number {
   const quote = css[start];
   let index = start + 1;
   while (index < css.length) {
-    const char = css[index];
+    const char = css.charAt(index);
     if (char === '\\') {
-      index += 2;
+      index = skipCssEscape(css, index);
       continue;
     }
-    if (char === '\n') return index;
+    if (isCssNewline(char)) return index;
     if (char === quote) return index + 1;
     index += 1;
   }
@@ -449,7 +464,7 @@ function readCssParens(css: string, start: number): number {
   while (index < css.length) {
     const char = css[index];
     if (char === '\\') {
-      index += 2;
+      index = skipCssEscape(css, index);
       continue;
     }
     if (char === '"' || char === "'") {
