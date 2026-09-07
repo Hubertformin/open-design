@@ -151,10 +151,43 @@ describe('lexical edge cases', () => {
     expect(groupTokens(css, 'cards', '<div class="card"></div>')).toEqual(['--surface']);
   });
 
+  it('treats an ampersand inside quoted selector text as a value', () => {
+    const css = '.card { &[data-state="&"] { background: var(--surface); } }';
+
+    expect(manifestFor(css).selectors).toEqual(['.card', '.card[data-state="&"]']);
+  });
+
   it('keeps a comma inside a selector function out of the selector split', () => {
     const css = '.card:is(.a, .b) { background: var(--surface); }';
 
     expect(manifestFor(css).selectors).toEqual(['.card:is(.a, .b)']);
+  });
+});
+
+describe('malformed input', () => {
+  // Recovery matters because one bad character used to be able to cost the rest
+  // of the stylesheet: a scan that ends on a stray `}` silently drops every
+  // later rule, and the manifest still looks complete.
+  it('skips a stray closing brace at the top level', () => {
+    const css = '} .btn { color: var(--accent); }';
+
+    expect(groupTokens(css, 'buttons', '<button class="btn"></button>')).toEqual(['--accent']);
+  });
+
+  it('keeps scanning after an unbalanced closing brace between rules', () => {
+    const css = '.card { background: var(--surface); } } .btn { color: var(--accent); }';
+    const bodyHtml = '<button class="btn"></button><div class="card"></div>';
+
+    expect(manifestFor(css, bodyHtml).selectors).toEqual(['.btn', '.card']);
+    expect(groupTokens(css, 'buttons', bodyHtml)).toEqual(['--accent']);
+  });
+
+  it('does not let an unterminated string swallow the rest of the stylesheet', () => {
+    // CSS ends a string at an unescaped newline, so the damage is bounded to
+    // the declaration that opened the quote.
+    const css = '.btn::before { content: "unterminated; }\n.card { background: var(--surface); }';
+
+    expect(manifestFor(css).selectors.some((selector) => selector.includes('.card'))).toBe(true);
   });
 });
 

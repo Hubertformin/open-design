@@ -280,6 +280,15 @@ type ScanCursor = {
   index: number;
 };
 
+type ScanScope = {
+  /** Selectors this level's rules nest inside, outermost already resolved. */
+  ancestors: string[];
+  /** False inside `@keyframes`, whose children are positions, not selectors. */
+  emitRules: boolean;
+  /** False at the top level, where a stray `}` is noise rather than an end. */
+  nested: boolean;
+};
+
 /**
  * Walk CSS into rules. A regex cannot do this correctly: it cannot balance
  * nested blocks, and any pattern that consumes the delimiter between two rules
@@ -289,7 +298,7 @@ type ScanCursor = {
  */
 function scanCssRules(css: string): ScannedCssRule[] {
   const rules: ScannedCssRule[] = [];
-  scanCssStatements(css, 0, [], rules, true);
+  scanCssStatements(css, 0, { ancestors: [], emitRules: true, nested: false }, rules);
   return rules;
 }
 
@@ -307,9 +316,8 @@ function isKeyframesPrelude(prelude: string): boolean {
 function scanCssStatements(
   css: string,
   start: number,
-  ancestors: string[],
+  scope: ScanScope,
   rules: ScannedCssRule[],
-  emitRules: boolean,
 ): ScanCursor {
   let declarations = '';
   let buffer = '';
@@ -362,7 +370,12 @@ function scanCssStatements(
 
     if (char === '}') {
       takeStatement();
-      return { declarations, index: index + 1 };
+      // Only a nested scan is closed by `}`. At the top level an unbalanced
+      // brace is malformed input, and skipping it keeps the rest of the
+      // stylesheet readable instead of discarding it.
+      if (scope.nested) return { declarations, index: index + 1 };
+      index += 1;
+      continue;
     }
 
     if (char === '{') {
@@ -377,17 +390,25 @@ function scanCssStatements(
         const block = scanCssStatements(
           css,
           index + 1,
-          ancestors,
+          {
+            ancestors: scope.ancestors,
+            emitRules: scope.emitRules && !isKeyframesPrelude(prelude),
+            nested: true,
+          },
           rules,
-          emitRules && !isKeyframesPrelude(prelude),
         );
         declarations += block.declarations;
         index = block.index;
         continue;
       }
-      const selectors = resolveNestedSelectors(prelude, ancestors);
-      const block = scanCssStatements(css, index + 1, selectors, rules, emitRules);
-      if (emitRules) rules.push({ prelude, selectors, declarations: block.declarations });
+      const selectors = resolveNestedSelectors(prelude, scope.ancestors);
+      const block = scanCssStatements(
+        css,
+        index + 1,
+        { ancestors: selectors, emitRules: scope.emitRules, nested: true },
+        rules,
+      );
+      if (scope.emitRules) rules.push({ prelude, selectors, declarations: block.declarations });
       index = block.index;
       continue;
     }
@@ -400,7 +421,11 @@ function scanCssStatements(
   return { declarations, index };
 }
 
-/** Index just past the closing quote of the string starting at `start`. */
+/**
+ * Index just past the closing quote of the string starting at `start`. An
+ * unescaped newline ends it, matching how CSS treats an unterminated string, so
+ * a stray quote does not swallow the rest of the stylesheet.
+ */
 function readCssString(css: string, start: number): number {
   const quote = css[start];
   let index = start + 1;
@@ -410,6 +435,7 @@ function readCssString(css: string, start: number): number {
       index += 2;
       continue;
     }
+    if (char === '\n') return index;
     if (char === quote) return index + 1;
     index += 1;
   }
@@ -450,13 +476,38 @@ function resolveNestedSelectors(prelude: string, ancestors: string[]): string[] 
   for (const ancestor of ancestors) {
     for (const part of parts) {
       resolved.push(
-        part.includes('&')
-          ? normalizeSelector(part.replace(/&/g, ancestor))
+        containsNestingSelector(part)
+          ? normalizeSelector(substituteNestingSelector(part, ancestor))
           : `${ancestor} ${part}`,
       );
     }
   }
   return resolved;
+}
+
+/**
+ * `&` inside quoted text — `[data-state="&"]` — is part of a value, not the
+ * nesting selector, so quoted spans are copied through untouched.
+ */
+function substituteNestingSelector(selector: string, ancestor: string): string {
+  let result = '';
+  let index = 0;
+  while (index < selector.length) {
+    const char = selector.charAt(index);
+    if (char === '"' || char === "'") {
+      const end = readCssString(selector, index);
+      result += selector.slice(index, end);
+      index = end;
+      continue;
+    }
+    result += char === '&' ? ancestor : char;
+    index += 1;
+  }
+  return result;
+}
+
+function containsNestingSelector(selector: string): boolean {
+  return substituteNestingSelector(selector, '\u0000').includes('\u0000');
 }
 
 /**
